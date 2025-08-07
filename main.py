@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, HTTPException, Header
 from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
+import json
 
 load_dotenv()
 
@@ -19,10 +20,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-class WebhookData(BaseModel):
-    type: str
-    post: dict
 
 class GhostToBluesky:
     def __init__(self):
@@ -120,18 +117,29 @@ class GhostToBluesky:
 
     def handle_webhook(self,  dict) -> bool:
         try:
+            # Log the incoming data for debugging
+            logger.info(f"Webhook data received: {json.dumps(data, indent=2)}")
+            
+            # Check if this is a post published event
             if data.get('type') != 'post.published':
                 logger.info(f"Ignoring event type: {data.get('type')}")
                 return True
                 
-            post = data.get('post', {})
+            # Extract post data - handle different possible structures
+            post = data.get('post') or data.get('data', {}).get('post', {})
             if not post:
-                logger.warning("No post data in webhook")
+                logger.warning("No post data found in webhook")
                 return False
                 
-            title = post.get('title', 'New Post')
-            url = post.get('url', '')
-            full_url = urljoin(self.ghost_api_url, url)
+            # Extract title and URL
+            title = post.get('title') or post.get('name') or 'New Post'
+            url_path = post.get('url') or post.get('slug') or ''
+            
+            if not url_path:
+                logger.warning("No URL found in post data")
+                return False
+                
+            full_url = urljoin(self.ghost_api_url, url_path)
             
             post_text = self.format_post_text(title, full_url)
             
@@ -145,14 +153,19 @@ class GhostToBluesky:
                 return False
         except Exception as e:
             logger.error(f"Error handling webhook: {e}")
+            logger.error(f"Webhook data that caused error: {json.dumps(data, indent=2)}")
             return False
 
 app = FastAPI()
 bridge = GhostToBluesky()
 
 @app.post("/webhook")
-async def webhook(webhook_data: WebhookData, authorization: str = Header(None)):
+async def webhook(request: Request, authorization: str = Header(None)):
     logger.info("Received webhook request")
+    
+    # Log raw request data for debugging
+    raw_body = await request.body()
+    logger.info(f"Raw webhook body: {raw_body.decode()}")
     
     if not authorization or not authorization.startswith("Bearer "):
         logger.warning("Unauthorized webhook request - missing or invalid Authorization header")
@@ -163,7 +176,14 @@ async def webhook(webhook_data: WebhookData, authorization: str = Header(None)):
         logger.warning("Unauthorized webhook request - invalid token")
         raise HTTPException(status_code=401, detail="Invalid token")
     
-    if bridge.handle_webhook(webhook_data.dict()):
+    # Parse JSON data
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.error(f"Failed to parse webhook JSON: {e}")
+        raise HTTPException(status_code=422, detail="Invalid JSON")
+    
+    if bridge.handle_webhook(data):
         logger.info("Webhook processed successfully")
         return {"status": "success"}
     else:
@@ -177,7 +197,7 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"message": "GhostxBluesky is running"}
+    return {"message": "Ghost to Bluesky Bridge is running"}
 
 if __name__ == "__main__":
     logger.info("Starting GhostxBluesky...")
