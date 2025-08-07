@@ -36,7 +36,8 @@ class GhostToBluesky:
             self.ghost_api_url, 
             self.ghost_admin_key, 
             self.bluesky_identifier, 
-            self.bluesky_password
+            self.bluesky_password,
+            self.webhook_secret
         ]
         
         if not all(required_vars):
@@ -134,11 +135,13 @@ class GhostToBluesky:
             
             post_text = self.format_post_text(title, full_url)
             
+            logger.info(f"Attempting to post: {post_text}")
+            
             if self.post_to_bluesky(post_text):
-                logger.info(f"Posted new blog post: {title}")
+                logger.info(f"✅ Successfully posted to Bluesky: {title}")
                 return True
             else:
-                logger.error(f"Failed to post to Bluesky: {title}")
+                logger.error(f"❌ Failed to post to Bluesky: {title}")
                 return False
         except Exception as e:
             logger.error(f"Error handling webhook: {e}")
@@ -149,26 +152,40 @@ bridge = GhostToBluesky()
 
 @app.post("/webhook")
 async def webhook(webhook_data: WebhookData, authorization: str = Header(None)):
+    logger.info("Received webhook request")
+    
     if not authorization or not authorization.startswith("Bearer "):
+        logger.warning("Unauthorized webhook request - missing or invalid Authorization header")
         raise HTTPException(status_code=401, detail="Unauthorized")
         
     token = authorization.split("Bearer ")[1]
     if token != bridge.webhook_secret:
+        logger.warning("Unauthorized webhook request - invalid token")
         raise HTTPException(status_code=401, detail="Invalid token")
     
     if bridge.handle_webhook(webhook_data.dict()):
+        logger.info("Webhook processed successfully")
         return {"status": "success"}
     else:
+        logger.error("Webhook processing failed")
         raise HTTPException(status_code=500, detail="Processing failed")
 
 @app.get("/health")
 async def health():
+    logger.info("Health check requested")
     return {"status": "healthy"}
 
+@app.get("/")
+async def root():
+    return {"message": "GhostxBluesky is running"}
+
 if __name__ == "__main__":
+    logger.info("Starting GhostxBluesky...")
+    
     if not bridge.create_bluesky_session():
         logger.error("Failed to initialize Bluesky session")
         sys.exit(1)
     
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+    logger.info(f"🚀 Server starting on port {port}")
     uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
