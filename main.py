@@ -148,7 +148,7 @@ app = FastAPI()
 bridge = GhostToBluesky()
 
 @app.post("/webhook")
-async def webhook(webhook_ WebhookData, authorization: str = Header(None)):
+async def webhook(webhook_data: WebhookData, authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
         
